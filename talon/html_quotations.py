@@ -10,7 +10,7 @@ from talon.utils import cssselect
 
 CHECKPOINT_PREFIX = "#!%!"
 CHECKPOINT_SUFFIX = "!%!#"
-CHECKPOINT_PATTERN = re.compile(CHECKPOINT_PREFIX + "\d+" + CHECKPOINT_SUFFIX)
+CHECKPOINT_PATTERN = re.compile(CHECKPOINT_PREFIX + r"\d+" + CHECKPOINT_SUFFIX)
 
 # HTML quote indicators (tag ids)
 QUOTE_IDS = ["OLK_SRC_BODY_SECTION"]
