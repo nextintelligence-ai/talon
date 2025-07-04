@@ -17,7 +17,9 @@ from talon.quotations import (
     validate_extraction_result,
     get_extraction_statistics,
     batch_extract_messages,
-    get_cached_pattern
+    get_cached_pattern,
+    extract_from_plain_preserve_forwarding,
+    mark_message_lines
 )
 
 
@@ -279,6 +281,76 @@ def test_error_handling():
     print()
 
 
+def test_scenario_1():
+    """Test: Reply with forwarding inside quotation"""
+    msg = "내 답변\n\n> 확인해보세요\n\n---- Forwarded message ----\n> 원본 내용\n> 계속..."
+    expected = "내 답변"
+    
+    result = extract_from_plain_preserve_forwarding(msg)
+    print("=== Test Scenario 1 ===")
+    print(f"Input:\n{repr(msg)}")
+    print(f"Expected:\n{repr(expected)}")
+    print(f"Result:\n{repr(result)}")
+    print(f"Match: {result == expected}")
+    print()
+    
+    # Debug: Check markers
+    lines = msg.splitlines()
+    markers = mark_message_lines(lines)
+    print(f"Lines: {lines}")
+    print(f"Markers: {markers}")
+    print()
+
+
+def test_scenario_2():
+    """Test: Forwarding email with multiple forwarding markers"""
+    msg = "확인해보세요\n\n---- Forwarded message ----\n> 원본 내용\n> 내 답변\n\n> 확인해보세요\n\n---- Forwarded message ----\n> 원본 내용"
+    expected = "확인해보세요\n\n---- Forwarded message ----\n> 원본 내용\n> 내 답변\n\n> 확인해보세요\n\n---- Forwarded message ----\n> 원본 내용"
+    
+    result = extract_from_plain_preserve_forwarding(msg)
+    print("=== Test Scenario 2 ===")
+    print(f"Input:\n{repr(msg)}")
+    print(f"Expected:\n{repr(expected)}")
+    print(f"Result:\n{repr(result)}")
+    print(f"Match: {result == expected}")
+    print()
+    
+    # Debug: Check markers
+    lines = msg.splitlines()
+    markers = mark_message_lines(lines)
+    print(f"Lines: {lines}")
+    print(f"Markers: {markers}")
+    print()
+
+
+def test_simple_forwarding():
+    """Test: Simple forwarding case"""
+    msg = "확인해보세요\n\n---- Forwarded message ----\n> 원본 내용"
+    expected = "확인해보세요\n\n---- Forwarded message ----\n> 원본 내용"
+    
+    result = extract_from_plain_preserve_forwarding(msg)
+    print("=== Test Simple Forwarding ===")
+    print(f"Input:\n{repr(msg)}")
+    print(f"Expected:\n{repr(expected)}")
+    print(f"Result:\n{repr(result)}")
+    print(f"Match: {result == expected}")
+    print()
+
+
+def test_simple_reply():
+    """Test: Simple reply case"""
+    msg = "내 답변\n\n> 원본 메시지"
+    expected = "내 답변"
+    
+    result = extract_from_plain_preserve_forwarding(msg)
+    print("=== Test Simple Reply ===")
+    print(f"Input:\n{repr(msg)}")
+    print(f"Expected:\n{repr(expected)}")
+    print(f"Result:\n{repr(result)}")
+    print(f"Match: {result == expected}")
+    print()
+
+
 def main():
     """Run all tests"""
     print("Testing Improved Talon Quotations Module")
@@ -292,6 +364,11 @@ def main():
     test_batch_processing()
     test_performance_optimization()
     test_error_handling()
+    
+    test_scenario_1()
+    test_scenario_2()
+    test_simple_forwarding()
+    test_simple_reply()
     
     print("All tests completed!")
 

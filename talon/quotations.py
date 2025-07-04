@@ -577,6 +577,7 @@ def extract_from_plain(msg_body: MessageBody) -> MessageBody:
     """
     if msg_body is None:
         msg_body = ""
+        
     delimiter = get_delimiter(msg_body)
     msg_body = preprocess(msg_body, delimiter)
     # don't process too long messages
@@ -588,6 +589,272 @@ def extract_from_plain(msg_body: MessageBody) -> MessageBody:
     msg_body = delimiter.join(lines)
     msg_body = postprocess(msg_body)
     return msg_body
+
+
+def extract_from_plain_preserve_forwarding(msg_body: MessageBody) -> MessageBody:
+    """
+    Extracts a non quoted message from provided plain text.
+    
+    This function removes reply quotations but preserves forwarding email quotations.
+    For forwarding emails (containing "---- Forwarded message ----" pattern),
+    the quotation content is preserved. For regular replies, quotations are removed.
+    
+    Args:
+        msg_body: The plain text email message body
+        
+    Returns:
+        The extracted message with forwarding quotations preserved
+        
+    Example:
+        >>> # For forwarding email
+        >>> msg = "Check this out\\n\\n---- Forwarded message ----\\n> Original content"
+        >>> result = extract_from_plain_preserve_forwarding(msg)
+        >>> # Returns: "Check this out\\n\\n---- Forwarded message ----\\n> Original content"
+        
+        >>> # For reply email  
+        >>> msg = "My response\\n\\n> Original message"
+        >>> result = extract_from_plain_preserve_forwarding(msg)
+        >>> # Returns: "My response"
+    """
+    if msg_body is None:
+        msg_body = ""
+    
+    delimiter = get_delimiter(msg_body)
+    msg_body = preprocess(msg_body, delimiter)
+    
+    # don't process too long messages
+    lines = msg_body.splitlines()[:MAX_LINES_COUNT]
+    markers = mark_message_lines(lines)
+    
+    # Check if this is a true forwarding email (not forwarding inside quotation)
+    is_forwarding = _is_true_forwarding_email(markers)
+    
+    if is_forwarding:
+        # For forwarding emails, preserve the content including quotations
+        # Only remove reply quotations that come before the forwarding marker
+        lines = process_marked_lines_for_forwarding(lines, markers)
+    else:
+        # For regular replies, use enhanced quotation removal
+        lines = _remove_quotations_enhanced(lines, markers)
+    
+    # concatenate lines, change links back
+    msg_body = delimiter.join(lines)
+    msg_body = re.sub(RE_NORMALIZED_LINK, r"<\1>", msg_body)
+    
+    # For forwarding emails, preserve formatting; for replies, strip
+    if is_forwarding:
+        return msg_body.rstrip()  # Only remove trailing whitespace
+    else:
+        return msg_body.strip()   # Remove leading and trailing whitespace
+
+
+def _remove_quotations_enhanced(lines: List[str], markers: Markers) -> List[str]:
+    """
+    Enhanced quotation removal that handles single quotation lines properly.
+    
+    This function finds the actual message content while properly handling
+    email headers (splitters) that may appear before the quotation section.
+    
+    Args:
+        lines: List of message lines to process
+        markers: String of markers for each line
+        
+    Returns:
+        Processed lines with quotations removed
+    """
+    if not lines or not markers:
+        return lines
+    
+    markers = "".join(markers) if isinstance(markers, list) else markers
+    
+    # Strategy: Find the main text content and exclude quotation blocks
+    # Handle cases like thunderbird: splitter -> quotation -> text
+    
+    # Find all text positions
+    text_positions = [i for i, marker in enumerate(markers) if marker == 't']
+    
+    if not text_positions:
+        return []
+    
+    # Find the start of any quotation block
+    quotation_start = None
+    
+    # First check for quotation markers
+    for i, marker in enumerate(markers):
+        if marker == 'm':
+            # Check if this is the start of a quotation block
+            consecutive_count = 0
+            for j in range(i, len(markers)):
+                if markers[j] == 'm':
+                    consecutive_count += 1
+                elif markers[j] == 'e':
+                    continue  # empty lines don't break quotation blocks
+                else:
+                    break
+            
+            # Single quotation after splitter is also a quotation block (thunderbird case)
+            is_after_splitter = i > 0 and markers[i-1] == 's'
+            
+            # Consider it a quotation block if:
+            # 1. Multiple consecutive quotation lines, OR
+            # 2. Single quotation line after a splitter (email header)
+            if consecutive_count >= 2 or (consecutive_count >= 1 and is_after_splitter):
+                quotation_start = i
+                break
+    
+    # If no quotation markers found, check for splitter patterns (Yahoo, AOL, etc.)
+    if quotation_start is None:
+        for i, marker in enumerate(markers):
+            if marker == 's':
+                # Check if this splitter indicates start of forwarded/quoted content
+                line_content = lines[i].lower() if i < len(lines) else ''
+                is_quotation_splitter = any(pattern in line_content for pattern in [
+                    'original message',
+                    'forwarded message', 
+                    'sent from',
+                    'from:',
+                    'date:',
+                    'subject:'
+                ])
+                
+                if is_quotation_splitter:
+                    quotation_start = i
+                    break
+    
+    if quotation_start is not None:
+        # Find text positions before and after the quotation block
+        text_before_quotation = [pos for pos in text_positions if pos < quotation_start]
+        text_after_quotation = [pos for pos in text_positions if pos > quotation_start]
+        
+        # For thunderbird-style emails: splitter -> quotation -> actual response
+        # Check if this is a thunderbird pattern: single quotation after splitter with text after
+        is_thunderbird_pattern = (
+            quotation_start > 0 and 
+            markers[quotation_start - 1] == 's' and  # quotation after splitter
+            text_after_quotation and  # has text after quotation
+            not text_before_quotation  # no text before quotation
+        )
+        
+        if is_thunderbird_pattern:
+            # Include only the text that comes after the quotation (actual user response)
+            # Skip the splitter and quotation parts
+            return lines[text_after_quotation[0]:]
+        elif text_before_quotation:
+            # Normal case: return text before quotation
+            return lines[:text_before_quotation[-1] + 1]
+        else:
+            # No valid text found
+            return []
+    else:
+        # No quotation block found, return all lines up to last text
+        return lines[:text_positions[-1] + 1]
+
+
+def _is_true_forwarding_email(markers: Markers) -> bool:
+    """
+    Check if this is a true forwarding email (forwarding marker not inside quotation).
+    
+    Args:
+        markers: String of markers for each line
+        
+    Returns:
+        True if this is a legitimate forwarding email, False otherwise
+    """
+    markers = "".join(markers) if isinstance(markers, list) else markers
+    
+    # Find all forwarding marker positions
+    forwarding_positions = [i for i, marker in enumerate(markers) if marker == 'f']
+    
+    if not forwarding_positions:
+        return False
+    
+    # Check if any forwarding marker is not inside a quotation sequence
+    for pos in forwarding_positions:
+        # A forwarding marker is legitimate if:
+        # 1. It's at the beginning, OR
+        # 2. It's preceded by text/empty/splitter markers (not quotation), AND
+        # 3. It's not part of a quotation sequence
+        
+        # Check if this forwarding is in the beginning non-quotation section
+        if pos == 0:
+            return True
+        
+        # Check the pattern before the forwarding marker
+        before_section = markers[:pos]
+        
+        # If there are no quotation markers before forwarding, it's legitimate
+        if 'm' not in before_section:
+            return True
+        
+        # Check if forwarding marker is preceded by text/empty/splitter
+        # and not surrounded by quotation markers
+        if markers[pos - 1] in ['t', 'e', 's']:
+            # Check if this is not inside a quotation block
+            # Look for the pattern: if forwarding is followed by quotation markers,
+            # it might be inside a quotation block
+            after_section = markers[pos + 1:] if pos + 1 < len(markers) else ''
+            
+            # If forwarding is followed immediately by quotation markers,
+            # it's likely inside a quotation block
+            if after_section and after_section[0] == 'm':
+                # Check if there are more quotation markers after forwarding
+                # than before it in the immediate context
+                quotation_after = len([m for m in after_section if m == 'm'])
+                if quotation_after > 0:
+                    # This forwarding is likely inside a quotation block
+                    continue
+            
+            return True
+    
+    return False
+
+
+def process_marked_lines_for_forwarding(lines: List[str], markers: Markers) -> List[str]:
+    """
+    Process marked lines specifically for forwarding emails.
+    
+    This function preserves forwarding content and quotations while removing
+    only reply quotations that appear before the forwarding content.
+    
+    Args:
+        lines: List of message lines to process
+        markers: String of markers for each line
+        
+    Returns:
+        Processed lines with forwarding content preserved
+    """
+    markers = "".join(markers) if isinstance(markers, list) else markers
+    
+    # Find the first legitimate forwarding marker position
+    forwarding_pos = -1
+    for i, marker in enumerate(markers):
+        if marker == 'f':
+            # Check if this is a legitimate forwarding marker
+            if i == 0 or markers[i - 1] in ['t', 'e', 's']:
+                forwarding_pos = i
+                break
+    
+    if forwarding_pos == -1:
+        # No legitimate forwarding marker found, use standard processing
+        return process_marked_lines(lines, markers)
+    
+    # Process the part before forwarding marker (remove reply quotations)
+    before_lines = lines[:forwarding_pos]
+    before_markers = markers[:forwarding_pos]
+    
+    if before_lines and before_markers:
+        # Apply enhanced quotation removal to the before part
+        processed_before = _remove_quotations_enhanced(before_lines, before_markers)
+    else:
+        processed_before = before_lines
+    
+    # Keep forwarding and after parts intact (preserve forwarding quotations)
+    forwarding_and_after_lines = lines[forwarding_pos:]
+    
+    # Combine processed before part with preserved forwarding part
+    result_lines = processed_before + forwarding_and_after_lines
+    
+    return result_lines
 
 
 def extract_with_quotation_from_plain(msg_body: MessageBody) -> ExtractionResult:

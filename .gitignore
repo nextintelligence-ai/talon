@@ -57,3 +57,4 @@ _trial_temp
 
 # vim-backup
 *.bak
+talon_venv/
